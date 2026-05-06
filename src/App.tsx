@@ -1,122 +1,66 @@
-import { useState } from 'react'
-import reactLogo from './assets/react.svg'
-import viteLogo from './assets/vite.svg'
-import heroImg from './assets/hero.png'
-import './App.css'
+import { useState } from "react";
+import { AppProvider } from "./context/AppContext";
+import { useApp } from "./context/AppContext";
+import Layout from "./components/Layout";
+import type { ViewName } from "./components/Layout";
+import FirstRunWizard from "./components/FirstRunWizard";
+import Dashboard from "./views/Dashboard";
+import Accounts from "./views/Accounts";
+import IncomeExpenses from "./views/IncomeExpenses";
+import Withdrawals from "./views/Withdrawals";
+import RothPlanner from "./views/RothPlanner";
+import TaxAnalysis from "./views/TaxAnalysis";
+import YearByYear from "./views/YearByYear";
+import Inheritance from "./views/Inheritance";
+import Scenarios from "./views/Scenarios";
+import Settings from "./views/Settings";
 
-function App() {
-  const [count, setCount] = useState(0)
+function AppContent() {
+  const [activeView, setActiveView] = useState<ViewName>("dashboard");
+  const { state } = useApp();
+  const [wizardDone, setWizardDone] = useState(state.hasCompletedWizard);
+
+  function renderView() {
+    switch (activeView) {
+      case "dashboard":
+        return <Dashboard />;
+      case "accounts":
+        return <Accounts />;
+      case "income":
+        return <IncomeExpenses />;
+      case "withdrawals":
+        return <Withdrawals />;
+      case "roth":
+        return <RothPlanner />;
+      case "tax":
+        return <TaxAnalysis />;
+      case "yearByYear":
+        return <YearByYear />;
+      case "inheritance":
+        return <Inheritance />;
+      case "scenarios":
+        return <Scenarios />;
+      case "settings":
+        return <Settings />;
+      default:
+        return <Dashboard />;
+    }
+  }
 
   return (
     <>
-      <section id="center">
-        <div className="hero">
-          <img src={heroImg} className="base" width="170" height="179" alt="" />
-          <img src={reactLogo} className="framework" alt="React logo" />
-          <img src={viteLogo} className="vite" alt="Vite logo" />
-        </div>
-        <div>
-          <h1>Get started</h1>
-          <p>
-            Edit <code>src/App.tsx</code> and save to test <code>HMR</code>
-          </p>
-        </div>
-        <button
-          type="button"
-          className="counter"
-          onClick={() => setCount((count) => count + 1)}
-        >
-          Count is {count}
-        </button>
-      </section>
-
-      <div className="ticks"></div>
-
-      <section id="next-steps">
-        <div id="docs">
-          <svg className="icon" role="presentation" aria-hidden="true">
-            <use href="/icons.svg#documentation-icon"></use>
-          </svg>
-          <h2>Documentation</h2>
-          <p>Your questions, answered</p>
-          <ul>
-            <li>
-              <a href="https://vite.dev/" target="_blank">
-                <img className="logo" src={viteLogo} alt="" />
-                Explore Vite
-              </a>
-            </li>
-            <li>
-              <a href="https://react.dev/" target="_blank">
-                <img className="button-icon" src={reactLogo} alt="" />
-                Learn more
-              </a>
-            </li>
-          </ul>
-        </div>
-        <div id="social">
-          <svg className="icon" role="presentation" aria-hidden="true">
-            <use href="/icons.svg#social-icon"></use>
-          </svg>
-          <h2>Connect with us</h2>
-          <p>Join the Vite community</p>
-          <ul>
-            <li>
-              <a href="https://github.com/vitejs/vite" target="_blank">
-                <svg
-                  className="button-icon"
-                  role="presentation"
-                  aria-hidden="true"
-                >
-                  <use href="/icons.svg#github-icon"></use>
-                </svg>
-                GitHub
-              </a>
-            </li>
-            <li>
-              <a href="https://chat.vite.dev/" target="_blank">
-                <svg
-                  className="button-icon"
-                  role="presentation"
-                  aria-hidden="true"
-                >
-                  <use href="/icons.svg#discord-icon"></use>
-                </svg>
-                Discord
-              </a>
-            </li>
-            <li>
-              <a href="https://x.com/vite_js" target="_blank">
-                <svg
-                  className="button-icon"
-                  role="presentation"
-                  aria-hidden="true"
-                >
-                  <use href="/icons.svg#x-icon"></use>
-                </svg>
-                X.com
-              </a>
-            </li>
-            <li>
-              <a href="https://bsky.app/profile/vite.dev" target="_blank">
-                <svg
-                  className="button-icon"
-                  role="presentation"
-                  aria-hidden="true"
-                >
-                  <use href="/icons.svg#bluesky-icon"></use>
-                </svg>
-                Bluesky
-              </a>
-            </li>
-          </ul>
-        </div>
-      </section>
-
-      <div className="ticks"></div>
-      <section id="spacer"></section>
+      {!wizardDone && <FirstRunWizard onComplete={() => setWizardDone(true)} />}
+      <Layout activeView={activeView} onNavigate={setActiveView}>
+        {renderView()}
+      </Layout>
     </>
-  )
+  );
 }
 
-export default App
+export default function App() {
+  return (
+    <AppProvider>
+      <AppContent />
+    </AppProvider>
+  );
+}
