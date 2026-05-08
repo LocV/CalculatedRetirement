@@ -173,12 +173,23 @@ export const LTCG_BRACKETS: Record<number, LTCGBracketSet> = {
 };
 
 // ============================================================
-// Social Security Taxation Thresholds (MFJ)
+// Age-65 Extra Standard Deduction (per-person)
 // ============================================================
 
-export const SS_THRESHOLDS = {
-  base: 32000,
-  upper: 44000,
+export const AGE_65_EXTRA_DEDUCTION: Record<number, { MFJ: number; SINGLE: number }> = {
+  2024: { MFJ: 1550,  SINGLE: 1950 },
+  2025: { MFJ: 1600,  SINGLE: 2000 },
+  2026: { MFJ: 1600,  SINGLE: 2000 },
+  2027: { MFJ: 1650,  SINGLE: 2050 },
+};
+
+// ============================================================
+// Social Security Taxation Thresholds (filing-specific)
+// ============================================================
+
+export const SS_THRESHOLDS: Record<'MFJ' | 'SINGLE', { base: number; upper: number }> = {
+  MFJ:    { base: 32000, upper: 44000 },
+  SINGLE: { base: 25000, upper: 34000 },
 };
 
 // ============================================================

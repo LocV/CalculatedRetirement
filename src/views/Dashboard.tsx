@@ -1,279 +1,397 @@
-import { useState, useMemo } from "react";
+import { useState, useMemo, useRef, useCallback } from "react";
 import {
   AreaChart,
   Area,
   BarChart,
   Bar,
-  LineChart,
-  Line,
   XAxis,
   YAxis,
   CartesianGrid,
   Tooltip,
-  Legend,
   ResponsiveContainer,
-  ComposedChart,
+  ReferenceLine,
 } from "recharts";
-import {
-  ChevronDown,
-  ChevronUp,
-  TrendingUp,
-  TrendingDown,
-  AlertTriangle,
-  AlertCircle,
-  Info,
-  CheckCircle,
-  Briefcase,
-  Heart,
-  Clock,
-  DollarSign,
-  Shield,
-  Calendar,
-} from "lucide-react";
 import { useApp } from "../context/AppContext";
-import { formatCurrency, cn } from "../utils/formatters";
+import { formatCurrency, formatPercent } from "../utils/formatters";
+import { toProjectionBuckets } from "../engine/simulator";
 import type { YearResult } from "../types";
+import { TAX_BRACKETS } from "../constants/taxConstants";
+import { palette } from "../constants/palette";
 
 // ============================================================
-// Palette
+// Bracket colors by rate
 // ============================================================
-const ACCOUNT_COLORS: Record<string, string> = {
-  TRADITIONAL_IRA: "#4A6FA5",
-  ROTH_IRA: "#22c55e",
-  "401K_TRADITIONAL": "#1B3A6B",
-  "401K_ROTH": "#16a34a",
-  BROKERAGE: "#7c3aed",
-  HSA: "#0891b2",
-  SAVINGS_CASH: "#94a3b8",
-  PENSION: "#f59e0b",
+const BRACKET_COLORS: Record<number, string> = {
+  0.10: "#1F6B47",
+  0.12: "#2E8B5F",
+  0.22: "#C9962E",
+  0.24: "#D67124",
+  0.32: "#C24A3A",
+  0.35: "#A0322A",
+  0.37: "#7A1F18",
 };
 
-const INCOME_COLORS: Record<string, string> = {
-  w2: "#4A6FA5",
-  ssA: "#22c55e",
-  ssB: "#16a34a",
-  rentalNet: "#f59e0b",
-  pension: "#f97316",
-  traditionalWithdrawals: "#7c3aed",
-  brokerageWithdrawals: "#0891b2",
-  rothConversion: "#94a3b8",
-};
+const DISPLAY_CAP = 600_000;
 
 // ============================================================
-// Helpers
+// Row helper for Year Detail
 // ============================================================
-function getReadinessStatus(simulation: YearResult[]): "green" | "yellow" | "red" {
-  const shortfallYears = simulation.filter((y) => y.hasShortfall);
-  if (shortfallYears.length === 0) return "green";
-  const earlyShortfall = shortfallYears.some((y) => y.ageA < 80);
-  return earlyShortfall ? "red" : "yellow";
-}
-
-// ============================================================
-// Sub-components
-// ============================================================
-
-interface MetricCardProps {
-  title: string;
-  value: string;
-  subtitle?: string;
-  color?: string;
-  icon?: React.ReactNode;
-  badge?: React.ReactNode;
-}
-
-function MetricCard({ title, value, subtitle, icon, badge }: MetricCardProps) {
-  return (
-    <div className="bg-white rounded-xl border border-slate-200 p-5 flex flex-col gap-2 shadow-sm">
-      <div className="flex items-center justify-between">
-        <span className="text-xs font-medium text-slate-500 uppercase tracking-wide">{title}</span>
-        {icon && <span className="text-slate-400">{icon}</span>}
-      </div>
-      <div className="text-2xl font-bold text-slate-800">{value}</div>
-      {subtitle && <div className="text-sm text-slate-500">{subtitle}</div>}
-      {badge && <div className="mt-1">{badge}</div>}
-    </div>
-  );
-}
-
-interface ReadinessCardProps {
-  status: "green" | "yellow" | "red";
-}
-
-function ReadinessCard({ status }: ReadinessCardProps) {
-  const configs = {
-    green: {
-      label: "On Track",
-      sub: "No shortfalls projected",
-      icon: <CheckCircle className="w-5 h-5 text-green-500" />,
-      bg: "bg-green-50",
-      border: "border-green-200",
-      text: "text-green-700",
-    },
-    yellow: {
-      label: "Caution",
-      sub: "Shortfalls after age 80",
-      icon: <AlertTriangle className="w-5 h-5 text-yellow-500" />,
-      bg: "bg-yellow-50",
-      border: "border-yellow-200",
-      text: "text-yellow-700",
-    },
-    red: {
-      label: "At Risk",
-      sub: "Shortfalls before age 80",
-      icon: <AlertCircle className="w-5 h-5 text-red-500" />,
-      bg: "bg-red-50",
-      border: "border-red-200",
-      text: "text-red-700",
-    },
-  };
-  const c = configs[status];
-  return (
-    <div className={cn("rounded-xl border p-5 flex flex-col gap-2 shadow-sm", c.bg, c.border)}>
-      <div className="flex items-center justify-between">
-        <span className="text-xs font-medium text-slate-500 uppercase tracking-wide">Retirement Readiness</span>
-        {c.icon}
-      </div>
-      <div className={cn("text-2xl font-bold", c.text)}>{c.label}</div>
-      <div className="text-sm text-slate-500">{c.sub}</div>
-    </div>
-  );
-}
-
-// ============================================================
-// Quick Adjust Panel
-// ============================================================
-interface QuickAdjustProps {
-  returnRate: number;
-  inflationRate: number;
-  lifeExpectancy: number;
-  onChange: (key: string, value: number) => void;
-}
-
-function QuickAdjustPanel({ returnRate, inflationRate, lifeExpectancy, onChange }: QuickAdjustProps) {
-  return (
-    <div className="bg-white rounded-xl border border-slate-200 shadow-sm p-5 space-y-5">
-      <div className="flex items-center gap-2 mb-1">
-        <Info className="w-4 h-4 text-blue-500" />
-        <p className="text-xs text-slate-500 italic">
-          These are view-only overrides. Use Settings to save permanently.
-        </p>
-      </div>
-
-      <div className="space-y-2">
-        <div className="flex justify-between">
-          <label className="text-sm font-medium text-slate-700">Investment Return Rate</label>
-          <span className="text-sm font-bold text-[#1B3A6B]">{(returnRate * 100).toFixed(1)}%</span>
-        </div>
-        <input
-          type="range"
-          min={1}
-          max={12}
-          step={0.1}
-          value={returnRate * 100}
-          onChange={(e) => onChange("returnRateOverride", parseFloat(e.target.value) / 100)}
-          className="w-full accent-[#4A6FA5]"
-        />
-        <div className="flex justify-between text-xs text-slate-400">
-          <span>1%</span><span>12%</span>
-        </div>
-      </div>
-
-      <div className="space-y-2">
-        <div className="flex justify-between">
-          <label className="text-sm font-medium text-slate-700">Inflation Rate</label>
-          <span className="text-sm font-bold text-[#1B3A6B]">{(inflationRate * 100).toFixed(1)}%</span>
-        </div>
-        <input
-          type="range"
-          min={0}
-          max={8}
-          step={0.1}
-          value={inflationRate * 100}
-          onChange={(e) => onChange("inflationRate", parseFloat(e.target.value) / 100)}
-          className="w-full accent-[#4A6FA5]"
-        />
-        <div className="flex justify-between text-xs text-slate-400">
-          <span>0%</span><span>8%</span>
-        </div>
-      </div>
-
-      <div className="space-y-2">
-        <div className="flex justify-between">
-          <label className="text-sm font-medium text-slate-700">Life Expectancy</label>
-          <span className="text-sm font-bold text-[#1B3A6B]">{lifeExpectancy} yrs</span>
-        </div>
-        <input
-          type="range"
-          min={75}
-          max={100}
-          step={1}
-          value={lifeExpectancy}
-          onChange={(e) => onChange("lifeExpectancyOverride", parseInt(e.target.value))}
-          className="w-full accent-[#4A6FA5]"
-        />
-        <div className="flex justify-between text-xs text-slate-400">
-          <span>75</span><span>100</span>
-        </div>
-      </div>
-    </div>
-  );
-}
-
-// ============================================================
-// Milestone Timeline
-// ============================================================
-interface Milestone {
-  year: number;
+interface DetailRowProps {
   label: string;
-  icon: React.ReactNode;
-  color: string;
+  value: number;
+  labelColor?: string;
+  big?: boolean;
+  sub?: string;
 }
 
-function MilestoneTimeline({ milestones }: { milestones: Milestone[] }) {
-  const sorted = [...milestones].sort((a, b) => a.year - b.year);
+function DetailRow({ label, value, labelColor, big, sub }: DetailRowProps) {
   return (
-    <div className="overflow-x-auto pb-2">
-      <div className="flex gap-0 items-stretch min-w-max">
-        {sorted.map((m, i) => (
-          <div key={i} className="flex flex-col items-center" style={{ minWidth: 120 }}>
-            <div
-              className={cn(
-                "rounded-full p-2 mb-2 border-2",
-                m.color
-              )}
-            >
-              {m.icon}
-            </div>
-            <div className="text-xs font-semibold text-slate-700 text-center px-1 leading-tight">{m.label}</div>
-            <div className="text-xs text-slate-400 mt-1 font-mono">{m.year}</div>
-            {i < sorted.length - 1 && (
-              <div className="absolute" />
-            )}
-          </div>
-        ))}
+    <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", padding: "3px 0" }}>
+      <span style={{ fontSize: 12, color: labelColor ?? palette.inkSoft }}>{label}</span>
+      <div style={{ textAlign: "right" }}>
+        <span
+          className="mono"
+          style={{ fontSize: big ? 14 : 12, color: labelColor ?? palette.ink, display: "block" }}
+        >
+          {formatCurrency(value)}
+        </span>
+        {sub && (
+          <span className="mono" style={{ fontSize: 9.5, color: palette.inkSofter, display: "block" }}>
+            {sub}
+          </span>
+        )}
       </div>
     </div>
   );
 }
 
 // ============================================================
-// Custom Tooltip
+// Quick Adjust Popover
 // ============================================================
-function CurrencyTooltip(props: Record<string, unknown>) {
-  const active = props.active as boolean | undefined;
-  const payload = props.payload as Array<{ name: string; value: number; color: string }> | undefined;
-  const label = props.label as string | undefined;
-  if (!active || !payload || payload.length === 0) return null;
+interface SliderPopoverProps {
+  label: string;
+  value: number;
+  min: number;
+  max: number;
+  step: number;
+  format: (v: number) => string;
+  onChange: (v: number) => void;
+  onClose: () => void;
+  anchorRef: React.RefObject<HTMLButtonElement | null>;
+}
+
+function SliderPopover({ label, value, min, max, step, format, onChange, onClose, anchorRef }: SliderPopoverProps) {
+  const rect = anchorRef.current?.getBoundingClientRect();
   return (
-    <div className="bg-white border border-slate-200 rounded-lg shadow-lg p-3 text-sm">
-      <p className="font-semibold text-slate-700 mb-1">{label}</p>
-      {payload.map((p, i) => (
-        <div key={i} className="flex justify-between gap-4">
-          <span style={{ color: p.color }}>{p.name}</span>
-          <span className="font-medium">{formatCurrency(p.value, true)}</span>
+    <>
+      <div style={{ position: "fixed", inset: 0, zIndex: 99 }} onClick={onClose} />
+      <div
+        style={{
+          position: "fixed",
+          top: rect ? rect.bottom + 8 : 100,
+          left: rect ? rect.left : 100,
+          zIndex: 100,
+          background: "#0F1C18",
+          border: `1px solid ${palette.borderSoft}`,
+          borderRadius: 6,
+          boxShadow: "0 16px 40px rgba(0,0,0,0.6)",
+          padding: "14px 16px",
+          minWidth: 220,
+        }}
+      >
+        <div style={{ display: "flex", justifyContent: "space-between", marginBottom: 10 }}>
+          <span style={{ fontSize: 11, color: palette.inkSoft, fontWeight: 600 }}>{label}</span>
+          <span className="mono" style={{ fontSize: 12, color: palette.good }}>{format(value)}</span>
         </div>
-      ))}
+        <input
+          type="range"
+          min={min}
+          max={max}
+          step={step}
+          value={value}
+          onChange={(e) => onChange(parseFloat(e.target.value))}
+          style={{ width: "100%" }}
+        />
+        <div style={{ display: "flex", justifyContent: "space-between", marginTop: 4 }}>
+          <span style={{ fontSize: 10, color: palette.inkSofter }}>{format(min)}</span>
+          <span style={{ fontSize: 10, color: palette.inkSofter }}>{format(max)}</span>
+        </div>
+      </div>
+    </>
+  );
+}
+
+// ============================================================
+// Cash Flow Bars (inline component)
+// ============================================================
+interface CashFlowBarsProps {
+  data: Array<{
+    year: number;
+    ageA: number;
+    wages: number;
+    other: number;
+    ss: number;
+    pension: number;
+    w401k: number;
+    wRoth: number;
+    wTax: number;
+    fromCash: number;
+    spend: number;
+    fedTax: number;
+  }>;
+  onHover: (ageA: number | null) => void;
+  retirementAgeA: number;
+}
+
+function CashFlowBars({ data, onHover, retirementAgeA }: CashFlowBarsProps) {
+  // Build tick values every 5 years of ageA
+  const ages = data.map((d) => d.ageA);
+  const minAge = ages[0] ?? 0;
+  const maxAge = ages[ages.length - 1] ?? 0;
+  const ticks: number[] = [];
+  for (let a = Math.ceil(minAge / 5) * 5; a <= maxAge; a += 5) {
+    ticks.push(a);
+  }
+
+  const handleMouseMove = useCallback(
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    (e: any) => {
+      if (e?.activePayload?.[0]) {
+        onHover(e.activePayload[0].payload.ageA);
+      }
+    },
+    [onHover]
+  );
+
+  const handleMouseLeave = useCallback(() => {
+    onHover(null);
+  }, [onHover]);
+
+  const CustomTooltip = (props: {
+    active?: boolean;
+    payload?: Array<{ name: string; value: number; color: string }>;
+    label?: string | number;
+  }) => {
+    const { active, payload, label } = props;
+    if (!active || !payload || payload.length === 0) return null;
+    const incomeTotal = payload
+      .filter((p) => p.value > 0)
+      .reduce((s, p) => s + p.value, 0);
+    const expenseTotal = Math.abs(
+      payload.filter((p) => p.value < 0).reduce((s, p) => s + p.value, 0)
+    );
+    return (
+      <div
+        style={{
+          background: "#0F1C18",
+          border: `1px solid ${palette.borderSoft}`,
+          borderRadius: 4,
+          padding: "8px 12px",
+          fontSize: 11,
+        }}
+      >
+        <div style={{ color: palette.inkSoft, marginBottom: 4 }}>Age {label}</div>
+        <div style={{ color: palette.wages }}>Income: {formatCurrency(incomeTotal, true)}</div>
+        <div style={{ color: palette.spend }}>Expenses: {formatCurrency(expenseTotal, true)}</div>
+      </div>
+    );
+  };
+
+  // Find retirement reference line data point
+  const retirementData = data.find((d) => d.ageA === retirementAgeA);
+  const refYear = retirementData?.ageA;
+
+  return (
+    <ResponsiveContainer width="100%" height={320}>
+      <BarChart
+        data={data}
+        margin={{ top: 10, right: 16, left: 10, bottom: 10 }}
+        onMouseMove={handleMouseMove}
+        onMouseLeave={handleMouseLeave}
+        barCategoryGap="20%"
+      >
+        <CartesianGrid
+          strokeDasharray=""
+          vertical={false}
+          stroke="rgba(255,255,255,0.06)"
+        />
+        <XAxis
+          dataKey="ageA"
+          ticks={ticks}
+          tick={{ fontSize: 11, fill: palette.inkSofter }}
+          axisLine={false}
+          tickLine={false}
+        />
+        <YAxis
+          tickFormatter={(v: number) => formatCurrency(Math.abs(v), true)}
+          tick={{ fontSize: 11, fill: palette.inkSofter }}
+          axisLine={false}
+          tickLine={false}
+          width={60}
+        />
+        <Tooltip content={<CustomTooltip />} />
+        <ReferenceLine y={0} stroke="rgba(255,255,255,0.15)" />
+        {refYear !== undefined && (
+          <ReferenceLine
+            x={refYear}
+            stroke={palette.spend}
+            strokeDasharray="4 4"
+            strokeWidth={1.5}
+          />
+        )}
+        {/* Income stacks */}
+        <Bar dataKey="wages" stackId="income" fill={palette.wages} name="Wages" />
+        <Bar dataKey="other" stackId="income" fill={palette.other} name="Rental" />
+        <Bar dataKey="ss" stackId="income" fill={palette.ss} name="SS" />
+        <Bar dataKey="pension" stackId="income" fill={palette.pension} name="Pension" />
+        <Bar dataKey="w401k" stackId="income" fill={palette.account401k} name="401(k) w/d" />
+        <Bar dataKey="wRoth" stackId="income" fill={palette.accountRoth} name="Roth w/d" />
+        <Bar dataKey="wTax" stackId="income" fill={palette.accountTax} name="Taxable w/d" />
+        <Bar dataKey="fromCash" stackId="income" fill={palette.accountCash} name="Cash" />
+        {/* Expense stacks (negative values) */}
+        <Bar dataKey="spend" stackId="expense" fill={palette.spend} name="Spend" />
+        <Bar dataKey="fedTax" stackId="expense" fill={palette.tax} name="Fed Tax" />
+      </BarChart>
+    </ResponsiveContainer>
+  );
+}
+
+// ============================================================
+// Tax Bracket Bar
+// ============================================================
+interface TaxBracketBarProps {
+  filingStatus: "MFJ" | "SINGLE";
+  taxYear: number;
+  taxableIncome?: number;
+  marginalRate?: number;
+  effectiveRate?: number;
+  hoverAge: number | null;
+}
+
+function TaxBracketBar({
+  filingStatus,
+  taxYear,
+  taxableIncome,
+  marginalRate,
+  effectiveRate,
+  hoverAge,
+}: TaxBracketBarProps) {
+  const yearKey = taxYear && TAX_BRACKETS[taxYear] ? taxYear : 2026;
+  const brackets = TAX_BRACKETS[yearKey][filingStatus];
+
+  // Cap display at DISPLAY_CAP
+  const capped = brackets.map((b) => ({
+    ...b,
+    displayMax: Math.min(b.max === Infinity ? DISPLAY_CAP : b.max, DISPLAY_CAP),
+    displayMin: b.min,
+  }));
+
+  const totalWidth = DISPLAY_CAP;
+
+  return (
+    <div style={{ padding: "16px 20px 14px" }}>
+      <div style={{ position: "relative" }}>
+        {/* Bar segments */}
+        <div style={{ display: "flex", height: 28, borderRadius: 3, overflow: "hidden" }}>
+          {capped.map((b, i) => {
+            const segWidth = Math.max(0, b.displayMax - b.displayMin);
+            const pct = (segWidth / totalWidth) * 100;
+            if (pct <= 0) return null;
+            return (
+              <div
+                key={i}
+                style={{
+                  flex: `0 0 ${pct}%`,
+                  background: BRACKET_COLORS[b.rate] ?? "#555",
+                  position: "relative",
+                  borderRight: i < capped.length - 1 ? "1px solid rgba(0,0,0,0.3)" : "none",
+                }}
+              />
+            );
+          })}
+        </div>
+
+        {/* Income tick */}
+        {taxableIncome !== undefined && taxableIncome > 0 && (
+          <div
+            style={{
+              position: "absolute",
+              top: -20,
+              left: `${Math.min((taxableIncome / totalWidth) * 100, 100)}%`,
+              transform: "translateX(-50%)",
+              pointerEvents: "none",
+            }}
+          >
+            <div
+              className="mono"
+              style={{
+                fontSize: 10,
+                color: palette.ink,
+                background: "rgba(15,28,24,0.9)",
+                border: `1px solid ${palette.borderSoft}`,
+                padding: "1px 4px",
+                borderRadius: 2,
+                whiteSpace: "nowrap",
+              }}
+            >
+              {formatCurrency(taxableIncome, true)}
+            </div>
+            <div
+              style={{
+                width: 1,
+                height: 32,
+                background: "rgba(255,255,255,0.8)",
+                margin: "0 auto",
+              }}
+            />
+          </div>
+        )}
+      </div>
+
+      {/* Rate labels below bar */}
+      <div style={{ display: "flex", marginTop: 4 }}>
+        {capped.map((b, i) => {
+          const segWidth = Math.max(0, b.displayMax - b.displayMin);
+          const pct = (segWidth / totalWidth) * 100;
+          if (pct <= 0) return null;
+          return (
+            <div
+              key={i}
+              style={{
+                flex: `0 0 ${pct}%`,
+                fontSize: 9,
+                color: palette.inkSofter,
+                textAlign: "center",
+                overflow: "hidden",
+              }}
+            >
+              {Math.round(b.rate * 100)}%
+            </div>
+          );
+        })}
+      </div>
+
+      {/* Marginal / Effective row */}
+      <div style={{ display: "flex", justifyContent: "space-between", marginTop: 8 }}>
+        <span style={{ fontSize: 10, color: palette.inkSoft, letterSpacing: "0.1em" }}>
+          MARGINAL ·{" "}
+          <span className="mono" style={{ color: palette.ink }}>
+            {marginalRate !== undefined ? formatPercent(marginalRate) : "—"}
+          </span>
+        </span>
+        <span style={{ fontSize: 10, color: palette.inkSoft, letterSpacing: "0.1em" }}>
+          EFFECTIVE ·{" "}
+          <span className="mono" style={{ color: palette.ink }}>
+            {effectiveRate !== undefined ? formatPercent(effectiveRate) : "—"}
+          </span>
+        </span>
+      </div>
+
+      {hoverAge === null && (
+        <div style={{ fontSize: 11, color: palette.inkSofter, marginTop: 4, textAlign: "center" }}>
+          Hover the cash flow chart to overlay your taxable income position.
+        </div>
+      )}
     </div>
   );
 }
@@ -283,423 +401,564 @@ function CurrencyTooltip(props: Record<string, unknown>) {
 // ============================================================
 export default function Dashboard() {
   const { state, simulation, dispatch } = useApp();
-  const [quickAdjustOpen, setQuickAdjustOpen] = useState(false);
+  const [hoverAge, setHoverAge] = useState<number | null>(null);
+  const [quickAdjustOpen, setQuickAdjustOpen] = useState(true);
+  const [openPopover, setOpenPopover] = useState<"return" | "inflation" | "horizon" | null>(null);
 
-  // ── Derived: current net worth
-  const currentNetWorth = useMemo(
-    () => state.accounts.reduce((sum, a) => sum + a.balance, 0),
+  const returnBtnRef = useRef<HTMLButtonElement>(null);
+  const inflationBtnRef = useRef<HTMLButtonElement>(null);
+  const horizonBtnRef = useRef<HTMLButtonElement>(null);
+
+  const personA = state.persons.find((p) => p.id === "personA");
+
+  // ── Alert conditions
+  const firstShortfall = useMemo(
+    () => simulation.find((y) => y.hasShortfall),
+    [simulation]
+  );
+  const firstIrmaa = useMemo(
+    () => simulation.find((y) => y.irmaaTriggered),
+    [simulation]
+  );
+  const hasRothConv = state.rothConversionPlan.entries.length > 0;
+
+  // Projected RMD at 73 (for no-roth-conversion alert)
+  const rmdAt73Year = useMemo(
+    () => simulation.find((y) => y.ageA === 73),
+    [simulation]
+  );
+  const projectedRmd73 = rmdAt73Year
+    ? Object.values(rmdAt73Year.rmds).reduce((s, v) => s + v, 0)
+    : 0;
+
+  // ── KPI values
+  const totalToday = useMemo(
+    () => state.accounts.reduce((s, a) => s + a.balance, 0),
     [state.accounts]
   );
 
-  // ── Simulation lookups
-  const yearAt70 = useMemo(() => simulation.find((y) => y.ageA === 70), [simulation]);
-  const yearAt80 = useMemo(() => simulation.find((y) => y.ageA === 80), [simulation]);
-  const firstYear = simulation[0];
+  const retirementYearResult = useMemo((): YearResult | undefined => {
+    if (!personA) return undefined;
+    const retireAge = personA.retirementYear - personA.birthYear;
+    return simulation.find((y) => y.ageA === retireAge);
+  }, [simulation, personA]);
 
-  // ── Readiness
-  const readinessStatus = useMemo(() => getReadinessStatus(simulation), [simulation]);
+  const annualSpend = useMemo(() => {
+    const currentYear = state.settings.currentYear;
+    return state.expenses
+      .filter((e) => e.startYear <= currentYear && e.endYear >= currentYear)
+      .reduce((s, e) => s + e.annualAmount, 0);
+  }, [state.expenses, state.settings.currentYear]);
 
-  // ── Alert banners
-  const hasAnyShortfall = simulation.some((y) => y.hasShortfall);
-  const firstIrmaaYear = simulation.find((y) => y.irmaaTriggered);
-  const hasRothConversion = state.rothConversionPlan.entries.length > 0;
+  const lifetimeTax = useMemo(
+    () => simulation.reduce((s, y) => s + y.taxResult.totalFederalTax, 0),
+    [simulation]
+  );
 
-  // ── Quick Adjust values
+  // ── Chart data
+  const chartData = useMemo(() => {
+    return simulation.map((yr) => {
+      const b = toProjectionBuckets(yr, state.accounts, state.settings);
+      return {
+        year: yr.year,
+        ageA: yr.ageA,
+        // net worth stacks
+        b401k: b.b401k,
+        bTax: b.bTax,
+        bRoth: b.bRoth,
+        bCash: b.bCash,
+        // cash flow income
+        wages: b.wages,
+        other: b.other,
+        ss: b.ss,
+        pension: b.pension,
+        w401k: b.w401k,
+        wRoth: b.wRoth,
+        wTax: b.wTax,
+        fromCash: b.fromCash,
+        // cash flow expenses (negated)
+        spend: -b.targetSpend,
+        fedTax: -b.fedTax,
+      };
+    });
+  }, [simulation, state.accounts, state.settings]);
+
+  // ── Hovered year detail
+  const hoveredYear = useMemo((): YearResult | undefined => {
+    if (hoverAge === null) return undefined;
+    return simulation.find((y) => y.ageA === hoverAge);
+  }, [hoverAge, simulation]);
+
+  const hoveredBuckets = useMemo(() => {
+    if (!hoveredYear) return null;
+    return toProjectionBuckets(hoveredYear, state.accounts, state.settings);
+  }, [hoveredYear, state.accounts, state.settings]);
+
+  // ── Settings derived
   const returnRate = state.settings.returnRateOverride ?? 0.06;
   const inflationRate = state.settings.inflationRate;
-  const lifeExpectancy = state.settings.lifeExpectancyOverride ?? state.settings.planningHorizonAge;
+  const planningHorizonAge = state.settings.planningHorizonAge;
+  const filingStatus = state.settings.filingStatus;
+  const taxYear = state.settings.taxYear ?? 2026;
 
-  const handleQuickAdjust = (key: string, value: number) => {
-    dispatch({ type: "UPDATE_SETTINGS", payload: { [key]: value } as Parameters<typeof dispatch>[0] extends { type: "UPDATE_SETTINGS"; payload: infer P } ? P : never });
+  // ── SS claim age for chips
+  const ssA = state.socialSecurity.find((s) => s.personId === "personA");
+  const annualSS = ssA
+    ? Math.round(
+        (ssA.claimAge <= 62 ? ssA.benefitAt62 :
+          ssA.claimAge <= 67 ? ssA.benefitAt67 :
+          ssA.benefitAt70) * 12 / 1000
+      )
+    : 0;
+
+  // Retirement year for chip
+  const retirementYear = personA?.retirementYear ?? state.settings.currentYear;
+
+  // ── Retirement age for net worth reference line
+  const retirementAgeA = personA ? personA.retirementYear - personA.birthYear : 65;
+
+  const handleFilingToggle = () => {
+    dispatch({
+      type: "UPDATE_SETTINGS",
+      payload: {
+        filingStatus: filingStatus === "MFJ" ? "SINGLE" : "MFJ",
+      },
+    });
   };
 
-  // ── Portfolio area chart data: per account type over time
-  const portfolioChartData = useMemo(() => {
-    return simulation.map((yr) => {
-      const row: Record<string, unknown> = { year: yr.year };
-      // Group balances by account type
-      state.accounts.forEach((acct) => {
-        const bal = yr.accountEndBalances[acct.id] ?? 0;
-        const key = acct.type as string;
-        row[key] = ((row[key] as number) ?? 0) + bal;
-      });
-      return row;
-    });
-  }, [simulation, state.accounts]);
+  const handleHover = useCallback((age: number | null) => {
+    setHoverAge(age);
+  }, []);
 
-  const uniqueAccountTypes = useMemo(() => {
-    const types = new Set(state.accounts.map((a) => a.type as string));
-    return Array.from(types);
-  }, [state.accounts]);
-
-  // ── Income bar chart: current year + next 10
-  const incomeChartData = useMemo(() => {
-    if (!firstYear) return [];
-    const startYear = firstYear.year;
-    return simulation
-      .filter((y) => y.year >= startYear && y.year <= startYear + 10)
-      .map((yr) => ({
-        year: yr.year,
-        "W-2": yr.income.w2,
-        "Social Security A": yr.income.ssA,
-        "Social Security B": yr.income.ssB,
-        Rental: yr.income.rentalNet,
-        Pension: yr.income.pension,
-        Withdrawals: yr.income.traditionalWithdrawals + yr.income.brokerageWithdrawals,
-        "Roth Conversion": yr.income.rothConversion,
-      }));
-  }, [simulation, firstYear]);
-
-  // ── Net worth line chart
-  const netWorthData = useMemo(() => {
-    return simulation.map((yr) => ({
-      year: yr.year,
-      "Net Worth": yr.totalAssets,
-    }));
-  }, [simulation]);
-
-  // ── Tax chart
-  const taxChartData = useMemo(() => {
-    return simulation.map((yr) => ({
-      year: yr.year,
-      "Federal Tax": yr.taxResult.totalFederalTax,
-      "Effective Rate %": yr.taxResult.effectiveRate * 100,
-    }));
-  }, [simulation]);
-
-  // ── Milestones
-  const milestones = useMemo((): Milestone[] => {
-    const persons = state.persons;
-    const ss = state.socialSecurity;
-    const items: Milestone[] = [];
-
-    if (persons[0]) {
-      items.push({
-        year: persons[0].retirementYear,
-        label: `${persons[0].name} Retires`,
-        icon: <Briefcase className="w-4 h-4" />,
-        color: "bg-blue-50 border-blue-400 text-blue-600",
-      });
-      items.push({
-        year: persons[0].birthYear + 60,
-        label: `${persons[0].name} Age 59½`,
-        icon: <Clock className="w-4 h-4" />,
-        color: "bg-purple-50 border-purple-400 text-purple-600",
-      });
-      items.push({
-        year: persons[0].birthYear + 65,
-        label: `${persons[0].name} Medicare`,
-        icon: <Heart className="w-4 h-4" />,
-        color: "bg-green-50 border-green-400 text-green-600",
-      });
-      items.push({
-        year: persons[0].birthYear + 73,
-        label: `${persons[0].name} RMD Start`,
-        icon: <DollarSign className="w-4 h-4" />,
-        color: "bg-orange-50 border-orange-400 text-orange-600",
-      });
-    }
-
-    if (persons[1]) {
-      items.push({
-        year: persons[1].retirementYear,
-        label: `${persons[1].name} Retires`,
-        icon: <Briefcase className="w-4 h-4" />,
-        color: "bg-blue-50 border-blue-300 text-blue-500",
-      });
-      items.push({
-        year: persons[1].birthYear + 65,
-        label: `${persons[1].name} Medicare`,
-        icon: <Heart className="w-4 h-4" />,
-        color: "bg-green-50 border-green-300 text-green-500",
-      });
-      items.push({
-        year: persons[1].birthYear + 73,
-        label: `${persons[1].name} RMD Start`,
-        icon: <DollarSign className="w-4 h-4" />,
-        color: "bg-orange-50 border-orange-300 text-orange-500",
-      });
-    }
-
-    if (ss[0] && persons[0]) {
-      items.push({
-        year: persons[0].birthYear + ss[0].claimAge,
-        label: `${persons[0].name} SS Claim`,
-        icon: <Shield className="w-4 h-4" />,
-        color: "bg-emerald-50 border-emerald-400 text-emerald-600",
-      });
-    }
-
-    if (ss[1] && persons[1] && (ss[1].benefitAt67 > 0 || ss[1].benefitAt62 > 0)) {
-      items.push({
-        year: persons[1].birthYear + ss[1].claimAge,
-        label: `${persons[1].name} SS Claim`,
-        icon: <Shield className="w-4 h-4" />,
-        color: "bg-emerald-50 border-emerald-300 text-emerald-500",
-      });
-    }
-
-    const minBirth = Math.min(...persons.map((p) => p.birthYear));
-    items.push({
-      year: minBirth + state.settings.planningHorizonAge,
-      label: "Planning Horizon",
-      icon: <Calendar className="w-4 h-4" />,
-      color: "bg-slate-50 border-slate-400 text-slate-600",
-    });
-
-    return items;
-  }, [state.persons, state.socialSecurity, state.settings.planningHorizonAge]);
-
-  const accountTypeLabel: Record<string, string> = {
-    TRADITIONAL_IRA: "Traditional IRA",
-    ROTH_IRA: "Roth IRA",
-    "401K_TRADITIONAL": "401(k) Traditional",
-    "401K_ROTH": "401(k) Roth",
-    BROKERAGE: "Brokerage",
-    HSA: "HSA",
-    SAVINGS_CASH: "Cash",
-    PENSION: "Pension",
-  };
+  const currentAgeA = simulation[0]?.ageA ?? (personA ? state.settings.currentYear - personA.birthYear : 0);
 
   return (
-    <div className="space-y-6 p-6">
-      {/* ── Alert Banners ── */}
-      {hasAnyShortfall && (
-        <div className="flex items-center gap-3 bg-red-50 border border-red-300 text-red-700 rounded-xl px-4 py-3 text-sm font-medium">
-          <AlertCircle className="w-5 h-5 flex-shrink-0" />
-          <span>
-            Warning: Your plan projects a cash shortfall in one or more years. Review withdrawals or reduce expenses.
-          </span>
-        </div>
-      )}
-
-      {firstIrmaaYear && (
-        <div className="flex items-center gap-3 bg-yellow-50 border border-yellow-300 text-yellow-700 rounded-xl px-4 py-3 text-sm font-medium">
-          <AlertTriangle className="w-5 h-5 flex-shrink-0" />
-          <span>
-            IRMAA surcharge triggered starting in {firstIrmaaYear.year} (Age {firstIrmaaYear.ageA}). Consider Roth conversions or income smoothing to reduce MAGI.
-          </span>
-        </div>
-      )}
-
-      {!hasRothConversion && (
-        <div className="flex items-center gap-3 bg-blue-50 border border-blue-200 text-blue-700 rounded-xl px-4 py-3 text-sm font-medium">
-          <Info className="w-5 h-5 flex-shrink-0" />
-          <span>
-            No Roth conversion plan is set. Consider adding conversions in the Roth Planner to reduce future RMDs and taxes.
-          </span>
-        </div>
-      )}
-
-      {/* ── Top Metrics Row ── */}
-      <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-5 gap-4">
-        <MetricCard
-          title="Current Net Worth"
-          value={formatCurrency(currentNetWorth, true)}
-          subtitle={`Across ${state.accounts.length} accounts`}
-          icon={<TrendingUp className="w-4 h-4" />}
-        />
-        <MetricCard
-          title="Projected at Age 70"
-          value={yearAt70 ? formatCurrency(yearAt70.totalAssets, true) : "—"}
-          subtitle={yearAt70 ? `Year ${yearAt70.year}` : "Outside horizon"}
-          icon={<TrendingUp className="w-4 h-4" />}
-        />
-        <MetricCard
-          title="Projected at Age 80"
-          value={yearAt80 ? formatCurrency(yearAt80.totalAssets, true) : "—"}
-          subtitle={yearAt80 ? `Year ${yearAt80.year}` : "Outside horizon"}
-          icon={<TrendingUp className="w-4 h-4" />}
-        />
-        <div className="bg-white rounded-xl border border-slate-200 p-5 flex flex-col gap-2 shadow-sm">
-          <span className="text-xs font-medium text-slate-500 uppercase tracking-wide">Annual Income vs Expenses</span>
-          {firstYear ? (
-            <>
-              <div className="text-lg font-bold text-green-600">
-                {formatCurrency(
-                  firstYear.income.w2 +
-                  firstYear.income.ssA +
-                  firstYear.income.ssB +
-                  firstYear.income.rentalNet +
-                  firstYear.income.pension +
-                  firstYear.income.traditionalWithdrawals +
-                  firstYear.income.brokerageWithdrawals,
-                  true
-                )}
-              </div>
-              <div className="text-xs text-green-600 font-medium">Income</div>
-              <div className="text-lg font-bold text-red-500">{formatCurrency(firstYear.totalExpenses, true)}</div>
-              <div className="text-xs text-red-500 font-medium">Expenses</div>
-              <div className={cn("text-sm font-semibold mt-1", firstYear.surplus >= 0 ? "text-slate-600" : "text-red-600")}>
-                {firstYear.surplus >= 0 ? "+" : ""}{formatCurrency(firstYear.surplus, true)} net
-              </div>
-            </>
-          ) : (
-            <div className="text-slate-400 text-sm">No data</div>
-          )}
-          <div className="flex gap-1 mt-1">
-            <TrendingUp className="w-4 h-4 text-green-500" />
-            <TrendingDown className="w-4 h-4 text-red-400" />
+    <div style={{ padding: "28px 36px", maxWidth: "100%" }}>
+      {/* ── 1. Alert Banners ── */}
+      <div style={{ display: "flex", flexDirection: "column", gap: 8, marginBottom: firstShortfall || firstIrmaa || !hasRothConv ? 20 : 0 }}>
+        {firstShortfall && (
+          <div className="alert alert-error">
+            ⚠ Income shortfall projected in {firstShortfall.year} (age {firstShortfall.ageA}). Review withdrawal strategy.
           </div>
-        </div>
-        <ReadinessCard status={readinessStatus} />
-      </div>
-
-      {/* ── Quick Adjust Panel ── */}
-      <div className="bg-white rounded-xl border border-slate-200 shadow-sm overflow-hidden">
-        <button
-          className="w-full flex items-center justify-between px-5 py-4 text-left hover:bg-slate-50 transition-colors"
-          onClick={() => setQuickAdjustOpen((o) => !o)}
-        >
-          <span className="font-semibold text-slate-700">Quick Adjust Assumptions</span>
-          {quickAdjustOpen ? <ChevronUp className="w-4 h-4 text-slate-400" /> : <ChevronDown className="w-4 h-4 text-slate-400" />}
-        </button>
-        {quickAdjustOpen && (
-          <div className="border-t border-slate-100 p-5">
-            <QuickAdjustPanel
-              returnRate={returnRate}
-              inflationRate={inflationRate}
-              lifeExpectancy={lifeExpectancy}
-              onChange={handleQuickAdjust}
-            />
+        )}
+        {firstIrmaa && (
+          <div className="alert alert-warning">
+            Medicare IRMAA surcharge triggered starting {firstIrmaa.year}. Consider Roth conversion timing.
+          </div>
+        )}
+        {!hasRothConv && (
+          <div className="alert alert-info">
+            No Roth conversion plan configured. At current balances, projected RMD at 73 is{" "}
+            <span className="mono">{formatCurrency(projectedRmd73)}</span>.
           </div>
         )}
       </div>
 
-      {/* ── Charts Row 1 ── */}
-      <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
-        {/* Stacked Area: Portfolio over time */}
-        <div className="bg-white rounded-xl border border-slate-200 shadow-sm p-5">
-          <h3 className="font-semibold text-slate-700 mb-4">Portfolio Value Over Time</h3>
-          {portfolioChartData.length > 0 ? (
-            <ResponsiveContainer width="100%" height={260}>
-              <AreaChart data={portfolioChartData} margin={{ top: 5, right: 10, left: 10, bottom: 5 }}>
-                <CartesianGrid strokeDasharray="3 3" stroke="#f1f5f9" />
-                <XAxis dataKey="year" tick={{ fontSize: 11 }} />
-                <YAxis tickFormatter={(v: number) => formatCurrency(v, true)} tick={{ fontSize: 11 }} width={70} />
-                <Tooltip content={(props) => <CurrencyTooltip {...props} />} />
-                <Legend wrapperStyle={{ fontSize: 11 }} />
-                {uniqueAccountTypes.map((type) => (
-                  <Area
-                    key={type}
-                    type="monotone"
-                    dataKey={type}
-                    name={accountTypeLabel[type] ?? type}
-                    stackId="1"
-                    stroke={ACCOUNT_COLORS[type] ?? "#94a3b8"}
-                    fill={ACCOUNT_COLORS[type] ?? "#94a3b8"}
-                    fillOpacity={0.7}
-                  />
-                ))}
+      {/* ── 2. Header Section ── */}
+      <div
+        style={{
+          display: "flex",
+          justifyContent: "space-between",
+          alignItems: "flex-start",
+          marginBottom: 24,
+        }}
+      >
+        <div>
+          <h1
+            style={{
+              fontSize: 34,
+              fontWeight: 500,
+              letterSpacing: "-0.02em",
+              color: palette.ink,
+              lineHeight: 1.1,
+            }}
+          >
+            Drawdown Atlas
+          </h1>
+          <p
+            style={{
+              fontSize: 13,
+              color: palette.inkSoft,
+              maxWidth: 540,
+              marginTop: 6,
+              lineHeight: 1.5,
+            }}
+          >
+            Year-by-year projection of assets, income, expenses, and taxes. Hover the chart to inspect a year.
+          </p>
+        </div>
+        <div style={{ display: "flex", gap: 8, alignItems: "center", paddingTop: 4, flexShrink: 0 }}>
+          <button
+            className="chip chip-sm"
+            onClick={handleFilingToggle}
+            title="Click to toggle filing status"
+          >
+            Filing · {filingStatus === "MFJ" ? "Married/Joint" : "Single"}
+          </button>
+          <span className="chip chip-sm" style={{ cursor: "default" }}>
+            Plan · {currentAgeA} → {planningHorizonAge}
+          </span>
+        </div>
+      </div>
+
+      {/* ── 3. KPI Strip ── */}
+      <div
+        style={{
+          display: "grid",
+          gridTemplateColumns: "repeat(4, 1fr)",
+          gap: 1,
+          background: palette.borderSoft,
+          borderRadius: 6,
+          overflow: "hidden",
+          marginBottom: 24,
+        }}
+      >
+        {/* Tile 1: Total Today */}
+        <div
+          className="kpi-tile"
+          style={{ cursor: "pointer" }}
+          onClick={() => console.log("Total today accounts:", state.accounts)}
+        >
+          <div className="kpi-edit-hint">EDIT ↗</div>
+          <div className="kpi-label">Total Today</div>
+          <div className="kpi-value mono">{formatCurrency(totalToday, true)}</div>
+          <div className="kpi-sub">Age {currentAgeA} today</div>
+        </div>
+
+        {/* Tile 2: At Retirement */}
+        <div
+          className="kpi-tile"
+          style={{ cursor: "pointer" }}
+          onClick={() => console.log("Retirement year result:", retirementYearResult)}
+        >
+          <div className="kpi-edit-hint">EDIT ↗</div>
+          <div className="kpi-label">At Retirement</div>
+          <div className="kpi-value mono">
+            {retirementYearResult
+              ? formatCurrency(retirementYearResult.totalAssets, true)
+              : "—"}
+          </div>
+          <div className="kpi-sub">After tax-deferred growth</div>
+        </div>
+
+        {/* Tile 3: Annual Spend */}
+        <div
+          className="kpi-tile"
+          style={{ cursor: "pointer" }}
+          onClick={() => console.log("Expenses:", state.expenses)}
+        >
+          <div className="kpi-edit-hint">EDIT ↗</div>
+          <div className="kpi-label">Annual Spend</div>
+          <div className="kpi-value mono">{formatCurrency(annualSpend, true)}</div>
+          <div className="kpi-sub">Today's dollars</div>
+        </div>
+
+        {/* Tile 4: Lifetime Tax */}
+        <div className="kpi-tile">
+          <div className="kpi-label">Lifetime Tax</div>
+          <div className="kpi-value mono">{formatCurrency(lifetimeTax, true)}</div>
+          <div className="kpi-sub">Federal, lifetime</div>
+        </div>
+      </div>
+
+      {/* ── 4. Quick Adjust Chips Row ── */}
+      <div style={{ marginBottom: 24 }}>
+        <div className="card-eyebrow" style={{ marginBottom: 8 }}>⚡ Quick adjust</div>
+        <div style={{ display: "flex", gap: 8, flexWrap: "wrap", alignItems: "center" }}>
+          {/* Return chip */}
+          <button
+            ref={returnBtnRef}
+            className="chip chip-sm"
+            onClick={() => setOpenPopover(openPopover === "return" ? null : "return")}
+          >
+            Return · {(returnRate * 100).toFixed(0)}%
+          </button>
+          {openPopover === "return" && (
+            <SliderPopover
+              label="Investment Return Rate"
+              value={returnRate * 100}
+              min={1}
+              max={12}
+              step={0.5}
+              format={(v) => `${v.toFixed(1)}%`}
+              onChange={(v) =>
+                dispatch({ type: "UPDATE_SETTINGS", payload: { returnRateOverride: v / 100 } })
+              }
+              onClose={() => setOpenPopover(null)}
+              anchorRef={returnBtnRef}
+            />
+          )}
+
+          {/* Inflation chip */}
+          <button
+            ref={inflationBtnRef}
+            className="chip chip-sm"
+            onClick={() => setOpenPopover(openPopover === "inflation" ? null : "inflation")}
+          >
+            Inflation · {(inflationRate * 100).toFixed(0)}%
+          </button>
+          {openPopover === "inflation" && (
+            <SliderPopover
+              label="Inflation Rate"
+              value={inflationRate * 100}
+              min={0}
+              max={8}
+              step={0.25}
+              format={(v) => `${v.toFixed(1)}%`}
+              onChange={(v) =>
+                dispatch({ type: "UPDATE_SETTINGS", payload: { inflationRate: v / 100 } })
+              }
+              onClose={() => setOpenPopover(null)}
+              anchorRef={inflationBtnRef}
+            />
+          )}
+
+          {/* Horizon chip */}
+          <button
+            ref={horizonBtnRef}
+            className="chip chip-sm"
+            onClick={() => setOpenPopover(openPopover === "horizon" ? null : "horizon")}
+          >
+            Horizon · {planningHorizonAge}
+          </button>
+          {openPopover === "horizon" && (
+            <SliderPopover
+              label="Planning Horizon (Age)"
+              value={planningHorizonAge}
+              min={75}
+              max={100}
+              step={1}
+              format={(v) => `Age ${v}`}
+              onChange={(v) =>
+                dispatch({ type: "UPDATE_SETTINGS", payload: { planningHorizonAge: v } })
+              }
+              onClose={() => setOpenPopover(null)}
+              anchorRef={horizonBtnRef}
+            />
+          )}
+
+          {/* Toggle for expand/collapse (not used for chart hide, just visual) */}
+          <button
+            className="chip chip-sm"
+            style={{ marginLeft: "auto" }}
+            onClick={() => setQuickAdjustOpen((o) => !o)}
+          >
+            {quickAdjustOpen ? "▲ Collapse" : "▼ Expand"}
+          </button>
+        </div>
+      </div>
+
+      {/* ── 5. Hero Card: Cash Flow ── */}
+      <div className="card" style={{ marginBottom: 20 }}>
+        <div className="card-eyebrow">INCOME · EXPENSES · TAXES</div>
+        <div className="card-title" style={{ marginBottom: 12 }}>Cash Flow</div>
+
+        {/* Summary chips */}
+        <div style={{ display: "flex", flexWrap: "wrap", gap: 6, marginBottom: 12 }}>
+          <span className="chip chip-sm">Retire · {retirementYear}</span>
+          <span className="chip chip-sm">
+            SS · ${annualSS}k @ {ssA?.claimAge ?? 67}
+          </span>
+          <span className="chip chip-sm">Return · {(returnRate * 100).toFixed(0)}%</span>
+        </div>
+
+        {chartData.length > 0 ? (
+          <CashFlowBars
+            data={chartData}
+            onHover={handleHover}
+            retirementAgeA={retirementAgeA}
+          />
+        ) : (
+          <div style={{ height: 320, display: "flex", alignItems: "center", justifyContent: "center", color: palette.inkSoft }}>
+            No simulation data
+          </div>
+        )}
+      </div>
+
+      {/* ── 6. Two-Column Row ── */}
+      <div style={{ display: "grid", gridTemplateColumns: "60% 40%", gap: 20, marginBottom: 20 }}>
+        {/* Net Worth card */}
+        <div className="card">
+          <div className="card-title" style={{ marginBottom: 16 }}>Net Worth Over Time</div>
+          {chartData.length > 0 ? (
+            <ResponsiveContainer width="100%" height={280}>
+              <AreaChart
+                data={chartData}
+                margin={{ top: 8, right: 8, left: 8, bottom: 8 }}
+                stackOffset="none"
+              >
+                <CartesianGrid stroke="rgba(255,255,255,0.06)" vertical={false} />
+                <XAxis
+                  dataKey="year"
+                  tick={{ fontSize: 11, fill: palette.inkSofter }}
+                  axisLine={false}
+                  tickLine={false}
+                />
+                <YAxis
+                  tickFormatter={(v: number) => formatCurrency(v, true)}
+                  tick={{ fontSize: 11, fill: palette.inkSofter }}
+                  axisLine={false}
+                  tickLine={false}
+                  width={60}
+                />
+                <Tooltip
+                  contentStyle={{
+                    background: "#0F1C18",
+                    border: `1px solid ${palette.borderSoft}`,
+                    borderRadius: 4,
+                    fontSize: 11,
+                  }}
+                  formatter={(v) => formatCurrency(Number(v ?? 0), true)}
+                />
+                <ReferenceLine
+                  x={retirementYear}
+                  stroke={palette.spend}
+                  strokeDasharray="4 4"
+                  strokeWidth={1.5}
+                />
+                <Area
+                  type="monotone"
+                  dataKey="b401k"
+                  stackId="nw"
+                  stroke={palette.account401k}
+                  fill={palette.account401k}
+                  fillOpacity={0.85}
+                  name="401(k)/IRA"
+                />
+                <Area
+                  type="monotone"
+                  dataKey="bTax"
+                  stackId="nw"
+                  stroke={palette.accountTax}
+                  fill={palette.accountTax}
+                  fillOpacity={0.85}
+                  name="Taxable"
+                />
+                <Area
+                  type="monotone"
+                  dataKey="bRoth"
+                  stackId="nw"
+                  stroke={palette.accountRoth}
+                  fill={palette.accountRoth}
+                  fillOpacity={0.85}
+                  name="Roth"
+                />
+                <Area
+                  type="monotone"
+                  dataKey="bCash"
+                  stackId="nw"
+                  stroke={palette.accountCash}
+                  fill={palette.accountCash}
+                  fillOpacity={0.85}
+                  name="Cash"
+                />
               </AreaChart>
             </ResponsiveContainer>
           ) : (
-            <div className="flex items-center justify-center h-64 text-slate-400">No simulation data</div>
+            <div style={{ height: 280, display: "flex", alignItems: "center", justifyContent: "center", color: palette.inkSoft }}>
+              No simulation data
+            </div>
           )}
         </div>
 
-        {/* Stacked Bar: Income by source */}
-        <div className="bg-white rounded-xl border border-slate-200 shadow-sm p-5">
-          <h3 className="font-semibold text-slate-700 mb-4">Annual Income by Source (10-Year)</h3>
-          {incomeChartData.length > 0 ? (
-            <ResponsiveContainer width="100%" height={260}>
-              <BarChart data={incomeChartData} margin={{ top: 5, right: 10, left: 10, bottom: 5 }}>
-                <CartesianGrid strokeDasharray="3 3" stroke="#f1f5f9" />
-                <XAxis dataKey="year" tick={{ fontSize: 11 }} />
-                <YAxis tickFormatter={(v: number) => formatCurrency(v, true)} tick={{ fontSize: 11 }} width={70} />
-                <Tooltip content={(props) => <CurrencyTooltip {...props} />} />
-                <Legend wrapperStyle={{ fontSize: 11 }} />
-                <Bar dataKey="W-2" stackId="a" fill={INCOME_COLORS.w2} />
-                <Bar dataKey="Social Security A" stackId="a" fill={INCOME_COLORS.ssA} />
-                <Bar dataKey="Social Security B" stackId="a" fill={INCOME_COLORS.ssB} />
-                <Bar dataKey="Rental" stackId="a" fill={INCOME_COLORS.rentalNet} />
-                <Bar dataKey="Pension" stackId="a" fill={INCOME_COLORS.pension} />
-                <Bar dataKey="Withdrawals" stackId="a" fill={INCOME_COLORS.traditionalWithdrawals} />
-                <Bar dataKey="Roth Conversion" stackId="a" fill={INCOME_COLORS.rothConversion} />
-              </BarChart>
-            </ResponsiveContainer>
+        {/* Year Detail card */}
+        <div className="card">
+          <div className="card-title" style={{ marginBottom: 12 }}>
+            {hoverAge !== null ? `Age ${hoverAge} · ${hoveredYear?.year ?? ""}` : "Hover the Chart"}
+          </div>
+
+          {hoverAge === null || !hoveredYear || !hoveredBuckets ? (
+            <div style={{ color: palette.inkSoft, fontSize: 12, marginTop: 8 }}>
+              Hover the cash flow chart to inspect a year.
+            </div>
           ) : (
-            <div className="flex items-center justify-center h-64 text-slate-400">No simulation data</div>
+            <div style={{ display: "flex", flexDirection: "column", gap: 2 }}>
+              {/* INCOME section */}
+              <div style={{ fontSize: 10, fontWeight: 600, letterSpacing: "0.15em", color: palette.wages, marginBottom: 4, marginTop: 4 }}>
+                INCOME
+              </div>
+              <DetailRow label="Wages" value={hoveredBuckets.wages} labelColor={palette.wages} />
+              <DetailRow label="Social Security" value={hoveredBuckets.ss} labelColor={palette.ss} />
+              {hoveredBuckets.pension > 0 && (
+                <DetailRow label="Pension" value={hoveredBuckets.pension} labelColor={palette.pension} />
+              )}
+              <DetailRow
+                label="401(k) w/d"
+                value={hoveredBuckets.w401k}
+                sub={hoveredBuckets.rmd > 0 ? `RMD: ${formatCurrency(hoveredBuckets.rmd)}` : undefined}
+              />
+              {hoveredBuckets.wRoth > 0 && (
+                <DetailRow label="Roth w/d" value={hoveredBuckets.wRoth} />
+              )}
+              {hoveredBuckets.wTax > 0 && (
+                <DetailRow label="Taxable w/d" value={hoveredBuckets.wTax} />
+              )}
+
+              {/* EXPENSES section */}
+              <div style={{ fontSize: 10, fontWeight: 600, letterSpacing: "0.15em", color: palette.spend, marginBottom: 4, marginTop: 10 }}>
+                EXPENSES
+              </div>
+              <DetailRow label="Target Spend" value={hoveredBuckets.targetSpend} labelColor={palette.spend} />
+              {hoveredBuckets.rothConv > 0 && (
+                <DetailRow label="Roth Conversion" value={hoveredBuckets.rothConv} labelColor={palette.accountTax} />
+              )}
+              <DetailRow
+                label="Federal Tax"
+                value={hoveredBuckets.fedTax}
+                labelColor={palette.tax}
+                sub={`marginal ${formatPercent(hoveredBuckets.marginal)}`}
+              />
+
+              {/* SUMMARY */}
+              <div style={{ borderTop: `1px solid ${palette.borderSoft}`, marginTop: 10, paddingTop: 8 }}>
+                <DetailRow
+                  label="Net Spendable"
+                  value={hoveredBuckets.netSpend}
+                  labelColor={palette.good}
+                  big
+                />
+                <DetailRow
+                  label="Ending Balance"
+                  value={hoveredYear.totalAssets}
+                  labelColor={palette.account401k}
+                  big
+                />
+                {hoveredBuckets.shortfall > 0 && (
+                  <DetailRow
+                    label="⚠ Shortfall"
+                    value={hoveredBuckets.shortfall}
+                    labelColor={palette.danger}
+                    big
+                  />
+                )}
+              </div>
+            </div>
           )}
         </div>
       </div>
 
-      {/* ── Charts Row 2 ── */}
-      <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
-        {/* Line: Net worth over time */}
-        <div className="bg-white rounded-xl border border-slate-200 shadow-sm p-5">
-          <h3 className="font-semibold text-slate-700 mb-4">Net Worth Over Time</h3>
-          {netWorthData.length > 0 ? (
-            <ResponsiveContainer width="100%" height={260}>
-              <LineChart data={netWorthData} margin={{ top: 5, right: 10, left: 10, bottom: 5 }}>
-                <CartesianGrid strokeDasharray="3 3" stroke="#f1f5f9" />
-                <XAxis dataKey="year" tick={{ fontSize: 11 }} />
-                <YAxis tickFormatter={(v: number) => formatCurrency(v, true)} tick={{ fontSize: 11 }} width={70} />
-                <Tooltip content={(props) => <CurrencyTooltip {...props} />} />
-                <Legend wrapperStyle={{ fontSize: 11 }} />
-                <Line
-                  type="monotone"
-                  dataKey="Net Worth"
-                  stroke="#1B3A6B"
-                  strokeWidth={2}
-                  dot={false}
-                />
-              </LineChart>
-            </ResponsiveContainer>
-          ) : (
-            <div className="flex items-center justify-center h-64 text-slate-400">No simulation data</div>
-          )}
+      {/* ── 7. Tax Bracket Bar ── */}
+      <div className="card">
+        <div style={{ padding: "0 0 8px" }}>
+          <div className="card-eyebrow">TAX POSITION</div>
+          <div className="card-title">
+            {hoverAge !== null ? `Tax Brackets · Age ${hoverAge}` : "Tax Brackets"}
+          </div>
         </div>
-
-        {/* Bar + Line: Federal Tax + Effective Rate */}
-        <div className="bg-white rounded-xl border border-slate-200 shadow-sm p-5">
-          <h3 className="font-semibold text-slate-700 mb-4">Federal Tax &amp; Effective Rate</h3>
-          {taxChartData.length > 0 ? (
-            <ResponsiveContainer width="100%" height={260}>
-              <ComposedChart data={taxChartData} margin={{ top: 5, right: 40, left: 10, bottom: 5 }}>
-                <CartesianGrid strokeDasharray="3 3" stroke="#f1f5f9" />
-                <XAxis dataKey="year" tick={{ fontSize: 11 }} />
-                <YAxis
-                  yAxisId="left"
-                  tickFormatter={(v: number) => formatCurrency(v, true)}
-                  tick={{ fontSize: 11 }}
-                  width={70}
-                />
-                <YAxis
-                  yAxisId="right"
-                  orientation="right"
-                  tickFormatter={(v: number) => `${v.toFixed(1)}%`}
-                  tick={{ fontSize: 11 }}
-                  width={45}
-                />
-                <Tooltip
-                  formatter={(value, name) =>
-                    name === "Effective Rate %" ? `${Number(value ?? 0).toFixed(1)}%` : formatCurrency(Number(value ?? 0), true)
-                  }
-                />
-                <Legend wrapperStyle={{ fontSize: 11 }} />
-                <Bar yAxisId="left" dataKey="Federal Tax" fill="#4A6FA5" opacity={0.8} />
-                <Line
-                  yAxisId="right"
-                  type="monotone"
-                  dataKey="Effective Rate %"
-                  stroke="#f59e0b"
-                  strokeWidth={2}
-                  dot={false}
-                />
-              </ComposedChart>
-            </ResponsiveContainer>
-          ) : (
-            <div className="flex items-center justify-center h-64 text-slate-400">No simulation data</div>
-          )}
-        </div>
+        <TaxBracketBar
+          filingStatus={filingStatus}
+          taxYear={taxYear}
+          taxableIncome={hoveredBuckets?.taxableIncome}
+          marginalRate={hoveredBuckets?.marginal}
+          effectiveRate={hoveredYear?.taxResult.effectiveRate}
+          hoverAge={hoverAge}
+        />
       </div>
 
-      {/* ── Milestone Timeline ── */}
-      <div className="bg-white rounded-xl border border-slate-200 shadow-sm p-5">
-        <h3 className="font-semibold text-slate-700 mb-4">Key Milestones</h3>
-        <MilestoneTimeline milestones={milestones} />
-      </div>
+      {/* Bottom spacer */}
+      <div style={{ height: 40 }} />
+
+      {/* Spacer */}
     </div>
   );
 }

@@ -1,25 +1,224 @@
 @import "tailwindcss";
+@import url('https://fonts.googleapis.com/css2?family=Inter+Tight:wght@400;500;600&family=JetBrains+Mono:wght@400;500&display=swap');
 
+/* ============================================================
+   Design Tokens
+   ============================================================ */
 :root {
-  --navy: #1B3A6B;
-  --blue: #4A6FA5;
-  --green: #16a34a;
-  --red: #dc2626;
-  --yellow: #ca8a04;
+  --account-401k:   #3FA76B;
+  --account-tax:    #5FBF8F;
+  --account-roth:   #86D6AC;
+  --account-cash:   #B8E5C9;
+  --spend:          #F2C94C;
+  --spend-bump:     #F2A93C;
+  --wages:          #7AB8D4;
+  --ss:             #6FB5A8;
+  --pension:        #B89BD4;
+  --other-income:   #A89BD4;
+  --tax-red:        #E0584C;
+  --ink:            #F2F1EC;
+  --ink-soft:       rgba(242, 241, 236, 0.6);
+  --ink-softer:     rgba(242, 241, 236, 0.4);
+  --bg-deep:        #0A1410;
+  --bg-mid:         #0F1C18;
+  --bg-lift:        rgba(20, 34, 28, 0.7);
+  --border-soft:    rgba(255, 255, 255, 0.06);
+  --border-accent:  rgba(63, 167, 107, 0.22);
+  --good:           #7CD4A8;
+  --danger:         #E0584C;
 }
 
-* {
-  box-sizing: border-box;
-}
+/* ============================================================
+   Reset & Base
+   ============================================================ */
+*, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+html, body, #root { height: 100%; }
 
 body {
-  margin: 0;
-  font-family: Inter, system-ui, -apple-system, sans-serif;
-  background: #f8fafc;
-  color: #1e293b;
+  font-family: 'Inter Tight', system-ui, -apple-system, sans-serif;
+  font-size: 13px;
+  line-height: 1.5;
+  color: var(--ink);
+  background: radial-gradient(ellipse at top, #0F2419 0%, #0A1410 60%, #060A08 100%);
+  background-attachment: fixed;
+  min-height: 100vh;
+  -webkit-font-smoothing: antialiased;
 }
 
-/* Scrollbar styling */
-::-webkit-scrollbar { width: 6px; height: 6px; }
-::-webkit-scrollbar-track { background: #f1f5f9; }
-::-webkit-scrollbar-thumb { background: #cbd5e1; border-radius: 3px; }
+.mono {
+  font-family: 'JetBrains Mono', 'Courier New', monospace !important;
+  font-variant-numeric: tabular-nums;
+}
+
+/* Scrollbar */
+::-webkit-scrollbar { width: 5px; height: 5px; }
+::-webkit-scrollbar-track { background: rgba(255,255,255,0.03); }
+::-webkit-scrollbar-thumb { background: rgba(255,255,255,0.12); border-radius: 3px; }
+::-webkit-scrollbar-thumb:hover { background: rgba(255,255,255,0.2); }
+
+/* ============================================================
+   Card Chrome
+   ============================================================ */
+.card {
+  background: linear-gradient(180deg, rgba(20,34,28,0.7) 0%, rgba(15,28,24,0.7) 100%);
+  border: 1px solid var(--border-soft);
+  border-radius: 6px;
+  padding: 18px 20px 22px;
+}
+.card-eyebrow {
+  font-size: 10px; font-weight: 600; letter-spacing: 0.2em;
+  text-transform: uppercase; color: var(--ink-soft); margin-bottom: 4px;
+}
+.card-title {
+  font-size: 18px; font-weight: 500; letter-spacing: -0.01em; color: var(--ink);
+}
+
+/* ============================================================
+   KPI Tiles
+   ============================================================ */
+.kpi-tile {
+  background: rgba(15,28,24,0.92); border-radius: 4px; padding: 18px;
+  transition: background 160ms; position: relative;
+}
+.kpi-tile:hover { background: rgba(20,38,30,0.95); }
+.kpi-label {
+  font-size: 10px; font-weight: 600; letter-spacing: 0.18em;
+  text-transform: uppercase; color: var(--ink-soft);
+}
+.kpi-value {
+  font-family: 'JetBrains Mono', monospace; font-size: 24px; font-weight: 500;
+  letter-spacing: -0.01em; color: var(--ink); margin-top: 8px;
+}
+.kpi-sub { font-size: 11px; color: var(--ink-softer); margin-top: 4px; }
+.kpi-edit-hint {
+  position: absolute; top: 10px; right: 10px;
+  font-size: 9px; font-weight: 600; letter-spacing: 0.1em;
+  color: var(--account-401k); text-transform: uppercase;
+}
+
+/* ============================================================
+   Chip
+   ============================================================ */
+.chip {
+  display: inline-flex; align-items: center; gap: 4px;
+  padding: 4px 10px; border-radius: 999px;
+  border: 1px solid var(--border-accent);
+  background: rgba(63,167,107,0.08);
+  color: var(--good); font-size: 11px; font-weight: 600;
+  letter-spacing: 0.04em; cursor: pointer; transition: all 140ms;
+  white-space: nowrap; user-select: none;
+}
+.chip:hover { background: rgba(63,167,107,0.16); border-color: rgba(63,167,107,0.4); }
+.chip.chip-sm { padding: 3px 8px; font-size: 10px; }
+
+/* ============================================================
+   Buttons
+   ============================================================ */
+.btn {
+  display: inline-flex; align-items: center; gap: 6px;
+  padding: 7px 14px; border-radius: 4px; font-size: 12px;
+  font-weight: 600; letter-spacing: 0.04em; cursor: pointer;
+  transition: all 140ms; border: none; font-family: inherit;
+}
+.btn-primary { background: var(--account-401k); color: #071008; }
+.btn-primary:hover { background: #4DBF7B; }
+.btn-ghost {
+  background: transparent; border: 1px solid var(--border-soft); color: var(--ink-soft);
+}
+.btn-ghost:hover { border-color: rgba(255,255,255,0.2); color: var(--ink); }
+.btn-danger {
+  background: rgba(224,88,76,0.12); border: 1px solid rgba(224,88,76,0.28);
+  color: var(--danger);
+}
+.btn-danger:hover { background: rgba(224,88,76,0.22); }
+
+/* ============================================================
+   Form Inputs (dark)
+   ============================================================ */
+input[type="text"], input[type="number"], input[type="email"],
+input[type="password"], select, textarea {
+  background: rgba(255,255,255,0.05);
+  border: 1px solid rgba(255,255,255,0.12);
+  border-radius: 4px; color: var(--ink);
+  padding: 6px 10px; font-size: 13px; font-family: inherit;
+  width: 100%; transition: border-color 140ms; appearance: none;
+}
+input:focus, select:focus, textarea:focus {
+  outline: none; border-color: var(--account-401k);
+  background: rgba(255,255,255,0.07);
+}
+input::placeholder, textarea::placeholder { color: var(--ink-softer); }
+select option { background: #0F1C18; color: var(--ink); }
+input[type="range"] { background: transparent; border: none; padding: 0; accent-color: var(--account-401k); }
+input[type="checkbox"] { width: 14px; height: 14px; accent-color: var(--account-401k); cursor: pointer; }
+
+/* ============================================================
+   Tabs
+   ============================================================ */
+.tab-nav {
+  display: flex; gap: 2px;
+  border-bottom: 1px solid var(--border-soft); margin-bottom: 20px;
+}
+.tab-item {
+  padding: 8px 16px; font-size: 12px; font-weight: 500;
+  color: var(--ink-soft); cursor: pointer;
+  border-bottom: 2px solid transparent; transition: all 140ms;
+  margin-bottom: -1px; user-select: none;
+}
+.tab-item:hover { color: var(--ink); }
+.tab-item.active { color: var(--good); border-bottom-color: var(--account-401k); }
+
+/* ============================================================
+   Data Table
+   ============================================================ */
+.data-table { width: 100%; border-collapse: collapse; font-size: 12px; }
+.data-table th {
+  text-align: left; padding: 8px 10px;
+  font-size: 10px; font-weight: 600; letter-spacing: 0.12em; text-transform: uppercase;
+  color: var(--ink-softer); border-bottom: 1px solid var(--border-soft);
+  white-space: nowrap; position: sticky; top: 0; background: #0A1410; z-index: 1;
+}
+.data-table td {
+  padding: 7px 10px; border-bottom: 1px solid rgba(255,255,255,0.03);
+  color: var(--ink-soft); white-space: nowrap;
+}
+.data-table tr:hover td { background: rgba(255,255,255,0.025); color: var(--ink); }
+.data-table .num {
+  font-family: 'JetBrains Mono', monospace; text-align: right; font-variant-numeric: tabular-nums;
+}
+.data-table .row-shortfall td { background: rgba(224,88,76,0.1) !important; }
+.data-table .row-irmaa td     { background: rgba(242,201,76,0.07) !important; }
+.data-table .row-surplus td   { background: rgba(63,167,107,0.05) !important; }
+
+/* ============================================================
+   Alerts & Badges
+   ============================================================ */
+.alert {
+  padding: 10px 14px; border-radius: 4px; font-size: 12px;
+  display: flex; align-items: flex-start; gap: 8px; line-height: 1.5;
+}
+.alert-error   { background: rgba(224,88,76,0.12);  border: 1px solid rgba(224,88,76,0.28);  color: #F4948C; }
+.alert-warning { background: rgba(242,201,76,0.08); border: 1px solid rgba(242,201,76,0.18); color: #F2C94C; }
+.alert-info    { background: rgba(63,167,107,0.08); border: 1px solid rgba(63,167,107,0.18); color: var(--good); }
+
+.badge {
+  display: inline-flex; align-items: center; padding: 2px 7px; border-radius: 3px;
+  font-size: 10px; font-weight: 600; letter-spacing: 0.08em; text-transform: uppercase;
+}
+
+/* ============================================================
+   Modal / Panel
+   ============================================================ */
+.modal-overlay {
+  position: fixed; inset: 0; background: rgba(0,0,0,0.65);
+  z-index: 200; display: flex; align-items: center; justify-content: center; padding: 16px;
+}
+.modal-box {
+  background: #0F1C18; border: 1px solid rgba(255,255,255,0.08);
+  border-radius: 8px; width: 100%; max-width: 560px; max-height: 90vh; overflow-y: auto;
+}
+.floating-panel {
+  position: fixed; background: #0F1C18; border: 1px solid var(--border-soft);
+  border-radius: 6px; box-shadow: 0 16px 40px rgba(0,0,0,0.6);
+  z-index: 100; min-width: 280px; max-width: 420px;
+}

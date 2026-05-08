@@ -14,6 +14,7 @@ import {
   calculateRentalNetIncome,
   calculateFederalTax,
   getBracketHeadroom,
+  getBracketHeadrooms,
 } from "./taxEngine";
 import type { FederalTaxParams } from "./taxEngine";
 
@@ -194,22 +195,9 @@ export function simulate(state: AppState): YearResult[] {
     const totalSSBenefit = ssAnnualA + ssAnnualB;
 
     // ----------------------------------------------------------------
-    // STEP 4: Calculate RMDs
-    // ----------------------------------------------------------------
-    const rmds: Record<string, number> = {};
-    for (const acct of accounts) {
-      rmds[acct.id] = 0;
-      if (!isTraditional(acct.type)) continue;
-
-      const ownerAge = acct.owner === "personA" ? ageA : acct.owner === "personB" ? ageB : 0;
-      if (ownerAge < RMD_START_AGE) continue;
-
-      const rmd = calculateRMD(accountBalances[acct.id] ?? 0, ownerAge);
-      rmds[acct.id] = rmd;
-    }
-
-    // ----------------------------------------------------------------
-    // STEP 5: Roth Conversions
+    // STEP 4 (moved): Roth Conversions — must happen BEFORE RMD calculation
+    // so the conversion reduces the balance that RMD is computed on.
+    // This matches the ordering in tax.js from the design prototype.
     // ----------------------------------------------------------------
     const rothConversions: Record<string, number> = {};
     for (const acct of accounts) {
@@ -256,7 +244,7 @@ export function simulate(state: AppState): YearResult[] {
           estTaxableBeforeConversion,
           targetRate,
           settings,
-          settings.taxYear
+          settings.taxYear ?? 2026
         );
 
         // Apply rothConversionAdjPct
@@ -277,6 +265,22 @@ export function simulate(state: AppState): YearResult[] {
       rothConversions[entry.fromAccountId] =
         (rothConversions[entry.fromAccountId] ?? 0) + conversionAmount;
       totalRothConversionAmount += conversionAmount;
+    }
+
+    // ----------------------------------------------------------------
+    // STEP 5: Calculate RMDs (on post-conversion balance)
+    // ----------------------------------------------------------------
+    const rmds: Record<string, number> = {};
+    for (const acct of accounts) {
+      rmds[acct.id] = 0;
+      if (!isTraditional(acct.type)) continue;
+
+      const ownerAge = acct.owner === "personA" ? ageA : acct.owner === "personB" ? ageB : 0;
+      if (ownerAge < RMD_START_AGE) continue;
+
+      // Use current (post-conversion) balance for RMD calculation
+      const rmd = calculateRMD(balances[acct.id] ?? 0, ownerAge);
+      rmds[acct.id] = rmd;
     }
 
     // ----------------------------------------------------------------
@@ -435,7 +439,7 @@ export function simulate(state: AppState): YearResult[] {
         totalTraditionalWithdrawals +
         totalRothConversionAmount;
       const provisionalIncome = ordinaryIncomeEst + totalSSBenefit * 0.5;
-      const ssTaxableAmount = calculateSSTaxable(provisionalIncome, totalSSBenefit);
+      const ssTaxableAmount = calculateSSTaxable(provisionalIncome, totalSSBenefit, settings.filingStatus);
 
       // ---- Calculate federal tax ----
       const taxParams: FederalTaxParams = {
@@ -447,6 +451,8 @@ export function simulate(state: AppState): YearResult[] {
         ssTaxableAmount,
         brokerageWithdrawals: totalBrokerageWithdrawals,
         hsaDistributions: totalHSADistributions,
+        ageA,
+        ageB,
       };
 
       taxResult = calculateFederalTax(taxParams, settings, settings.taxYear);
@@ -578,4 +584,103 @@ export function simulate(state: AppState): YearResult[] {
   }
 
   return results;
+}
+
+// ============================================================
+// Dashboard Aggregation Helper
+// ============================================================
+
+/**
+ * Maps a YearResult (per-account granularity) to the 4-bucket format used
+ * by the Dashboard charts — matching the ProjectionRow shape from tax.js.
+ *
+ * Bucket mapping:
+ *   b401k  = TRADITIONAL_IRA + TRADITIONAL_401K
+ *   bRoth  = ROTH_IRA + ROTH_401K
+ *   bTax   = BROKERAGE
+ *   bCash  = SAVINGS_CASH + HSA (cash-like)
+ */
+export interface ProjectionBuckets {
+  b401k: number;
+  bRoth: number;
+  bTax: number;
+  bCash: number;
+  // withdrawals by bucket
+  w401k: number;
+  wRoth: number;
+  wTax: number;
+  fromCash: number;
+  // income
+  wages: number;
+  other: number;  // rental net
+  ss: number;
+  pension: number;
+  // conversions / RMD
+  rothConv: number;
+  rmd: number;
+  // spending
+  targetSpend: number;
+  // tax
+  fedTax: number;
+  marginal: number;
+  taxableIncome: number;
+  grossIncome: number;
+  // outcomes
+  netSpend: number;
+  shortfall: number;
+  // bracket headroom
+  headroom12: number;
+  headroom22: number;
+  headroom24: number;
+}
+
+export function toProjectionBuckets(
+  year: YearResult,
+  accounts: import("../types").Account[],
+  settings: import("../types").AppSettings
+): ProjectionBuckets {
+  let b401k = 0, bRoth = 0, bTax = 0, bCash = 0;
+  let w401k = 0, wRoth = 0, wTax = 0, fromCash = 0, rmd = 0;
+
+  for (const acct of accounts) {
+    const endBal = year.accountEndBalances[acct.id] ?? 0;
+    const wd = year.withdrawals[acct.id] ?? 0;
+    const rmdAmt = year.rmds[acct.id] ?? 0;
+
+    switch (acct.type) {
+      case AccountType.TRADITIONAL_IRA:
+      case AccountType.TRADITIONAL_401K:
+        b401k += endBal; w401k += wd; rmd += rmdAmt; break;
+      case AccountType.ROTH_IRA:
+      case AccountType.ROTH_401K:
+        bRoth += endBal; wRoth += wd; break;
+      case AccountType.BROKERAGE:
+        bTax += endBal; wTax += wd; break;
+      case AccountType.SAVINGS_CASH:
+      case AccountType.HSA:
+        bCash += endBal; fromCash += wd; break;
+    }
+  }
+
+  const { taxResult, income, totalExpenses } = year;
+  const headrooms = getBracketHeadrooms(taxResult.taxableOrdinaryIncome, settings, settings.taxYear ?? 2026);
+
+  return {
+    b401k, bRoth, bTax, bCash,
+    w401k, wRoth, wTax, fromCash,
+    wages: income.w2,
+    other: income.rentalNet,
+    ss: income.ssA + income.ssB,
+    pension: income.pension,
+    rothConv: income.rothConversion,
+    rmd,
+    targetSpend: totalExpenses,
+    fedTax: taxResult.totalFederalTax,
+    marginal: taxResult.marginalRate,
+    taxableIncome: taxResult.taxableOrdinaryIncome,
+    grossIncome: taxResult.grossIncome,
+    netSpend: year.netIncome,
+    shortfall: year.hasShortfall ? Math.abs(year.netIncome) : 0,
+    ...headrooms,
+  };
 }

@@ -8,6 +8,7 @@ import type {
 import {
   TAX_BRACKETS,
   STANDARD_DEDUCTION,
+  AGE_65_EXTRA_DEDUCTION,
   LTCG_BRACKETS,
   IRMAA_TIERS,
   RMD_TABLE,
@@ -59,39 +60,32 @@ export function interpolateSSBenefit(ss: SocialSecurity): number {
 /**
  * Computes how much of the annual SS benefit is subject to federal tax.
  *
- * IRS two-tier provisional income test (MFJ thresholds):
- *   PI < $32,000          → 0% taxable
- *   $32,000–$44,000       → up to 50% of benefit taxable
- *   PI > $44,000          → up to 85% of benefit taxable
+ * IRS two-tier provisional income test:
+ *   MFJ:    PI < $32k → 0%, $32k–$44k → up to 50%, >$44k → up to 85%
+ *   Single: PI < $25k → 0%, $25k–$34k → up to 50%, >$34k → up to 85%
  *
- * The correct formula:
- *   tier1 = min((PI - 32000) * 0.50, annualSSBenefit * 0.50)   [if PI > 32000]
- *   tier2 = min((PI - 44000) * 0.85, annualSSBenefit * 0.85 - tier1) [if PI > 44000]
- *   ssTaxable = min(tier1 + tier2, annualSSBenefit * 0.85)
+ * Matches tax.js from the design prototype exactly.
  */
 export function calculateSSTaxable(
   provisionalIncome: number,
-  annualSSBenefit: number
+  annualSSBenefit: number,
+  filing: 'MFJ' | 'SINGLE' = 'MFJ'
 ): number {
   if (annualSSBenefit <= 0) return 0;
 
-  const { base, upper } = SS_THRESHOLDS;
+  const { base, upper } = SS_THRESHOLDS[filing];
 
-  if (provisionalIncome <= base) {
-    return 0;
-  }
+  if (provisionalIncome <= base) return 0;
 
-  let tier1 = 0;
-  if (provisionalIncome > base) {
-    tier1 = Math.min((provisionalIncome - base) * 0.5, annualSSBenefit * 0.5);
-  }
+  // tier1: provisional income in the 50% zone
+  const tier1 = Math.min((provisionalIncome - base) * 0.5, annualSSBenefit * 0.5);
 
+  // tier2: provisional income above the 85% threshold
   let tier2 = 0;
   if (provisionalIncome > upper) {
-    tier2 = Math.min(
-      (provisionalIncome - upper) * 0.85,
-      annualSSBenefit * 0.85 - tier1
-    );
+    const part1 = Math.min(annualSSBenefit * 0.5, 0.5 * (upper - base));
+    const part2 = 0.85 * (provisionalIncome - upper);
+    tier2 = Math.min(0.85 * annualSSBenefit, part1 + part2) - tier1;
   }
 
   return Math.min(tier1 + tier2, annualSSBenefit * 0.85);
@@ -215,6 +209,9 @@ export interface FederalTaxParams {
   ssTaxableAmount: number;
   brokerageWithdrawals: number;
   hsaDistributions: number;
+  /** Optional: owner ages used to add the age-65 extra standard deduction */
+  ageA?: number;
+  ageB?: number;
 }
 
 /**
@@ -239,6 +236,8 @@ export function calculateFederalTax(
     ssTaxableAmount,
     brokerageWithdrawals,
     hsaDistributions,
+    ageA,
+    ageB,
   } = params;
 
   // Resolve tax year — fall back to nearest known year if needed
@@ -249,7 +248,16 @@ export function calculateFederalTax(
     : 2025;
 
   const brackets = TAX_BRACKETS[resolvedYear]?.[settings.filingStatus] ?? TAX_BRACKETS[2026].MFJ;
-  const stdDed = STANDARD_DEDUCTION[resolvedYear]?.[settings.filingStatus] ?? STANDARD_DEDUCTION[2026].MFJ;
+
+  // Base standard deduction + age-65 extra deduction (per qualifying person)
+  let stdDed = STANDARD_DEDUCTION[resolvedYear]?.[settings.filingStatus] ?? STANDARD_DEDUCTION[2026].MFJ;
+  const age65Extra = AGE_65_EXTRA_DEDUCTION[resolvedYear]?.[settings.filingStatus] ?? 1600;
+  if (settings.filingStatus === 'MFJ') {
+    const extra65Count = ((ageA ?? 0) >= 65 ? 1 : 0) + ((ageB ?? 0) >= 65 ? 1 : 0);
+    stdDed += age65Extra * extra65Count;
+  } else {
+    if ((ageA ?? 0) >= 65) stdDed += age65Extra;
+  }
   const ltcgBrackets = LTCG_BRACKETS[resolvedYear]?.[settings.filingStatus] ?? LTCG_BRACKETS[2026].MFJ;
 
   // Gross ordinary income (brokerage is LTCG — excluded from ordinary income calculation)
@@ -353,24 +361,29 @@ export function getBracketHeadroom(
   const resolvedYear = TAX_BRACKETS[taxYear] ? taxYear : 2026;
   const brackets = TAX_BRACKETS[resolvedYear]?.[settings.filingStatus] ?? TAX_BRACKETS[2026].MFJ;
 
-  let accumulated = 0;
-
   for (const bracket of brackets) {
-    const bracketWidth =
-      bracket.max === Infinity ? Infinity : bracket.max - bracket.min + 1;
-
     if (bracket.rate === targetRate) {
-      // How much of this bracket has already been consumed by taxableIncome?
+      const bracketWidth = bracket.max === Infinity ? Infinity : bracket.max - bracket.min + 1;
       const consumed = Math.max(0, Math.min(taxableIncome - bracket.min, bracketWidth));
-      const headroom = bracketWidth === Infinity
-        ? Infinity
-        : bracketWidth - consumed;
-      return Math.max(0, headroom);
+      return bracketWidth === Infinity ? Infinity : Math.max(0, bracketWidth - consumed);
     }
-
-    accumulated += bracketWidth === Infinity ? 0 : bracketWidth;
-    // Move past brackets with lower rates
   }
 
-  return 0; // Target bracket not found
+  return 0;
+}
+
+/**
+ * Returns headroom to the 12%, 22%, and 24% brackets simultaneously.
+ * Mirrors the headroom12/headroom22/headroom24 fields from tax.js.
+ */
+export function getBracketHeadrooms(
+  taxableIncome: number,
+  settings: AppSettings,
+  taxYear: number
+): { headroom12: number; headroom22: number; headroom24: number } {
+  return {
+    headroom12: getBracketHeadroom(taxableIncome, 0.12, settings, taxYear),
+    headroom22: getBracketHeadroom(taxableIncome, 0.22, settings, taxYear),
+    headroom24: getBracketHeadroom(taxableIncome, 0.24, settings, taxYear),
+  };
 }
